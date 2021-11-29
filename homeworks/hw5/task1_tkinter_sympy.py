@@ -1,8 +1,122 @@
 from tkinter import *
 import math
-from sympy import Point, Polygon
+import heapq
+# from sympy import Point, Polygon
+from shapely.geometry import Point, Polygon
 
 '''================= Your classes and methods ================='''
+
+RESOLUTION = 40
+ANGLE_LIMIT = math.pi / 4
+ANGLE_TOLERENCE = math.pi / 12
+CHNG_DIR_PENALTY = 1e3
+
+
+def naive_heuristic(position, target):
+    x, y, yaw = position
+    xt, yt, yawt = target
+    circ = 2 * math.pi
+    dist = (x - xt) ** 2 + (y - yt) ** 2 + 10 * (yaw % circ - yawt % circ) ** 2
+    return dist
+
+def custom_heuristic(position, target):
+    x, y, yaw = position
+    xt, yt, yawt = target
+    dist = (x - xt) ** 2 + (y - yt) ** 2
+    angle = abs((yaw - yawt) % math.pi)
+    return dist + angle
+
+def create_circle(x, y, r, canvasName, color='yellow'): #center coordinates, radius
+    x0 = x - r
+    y0 = y - r
+    x1 = x + r
+    y1 = y + r
+    return canvasName.create_oval(x0, y0, x1, y1, outline=color, fill=color)
+
+
+def naive_path(position, target, canvas, radius=2, n_points=50):
+    x, y, yaw = position
+    xt, yt, yawt = target
+    dx = (xt - x) / n_points
+    dy = (yt - y) / n_points
+    xc, yc = x, y
+    for _ in range(n_points):
+        xc += dx
+        yc += dy
+        create_circle(xc, yc, radius, canvas)
+
+
+class PriorityQueue:
+    """
+      Implements a priority queue data structure. Each inserted item
+      has a priority associated with it and the client is usually interested
+      in quick retrieval of the lowest-priority item in the queue. This
+      data structure allows O(1) access to the lowest-priority item.
+    """
+    def  __init__(self):
+        self.heap = []
+        self.count = 0
+
+    def push(self, item, priority):
+        entry = (priority, self.count, item)
+        heapq.heappush(self.heap, entry)
+        self.count += 1
+
+    def pop(self):
+        (_, _, item) = heapq.heappop(self.heap)
+        return item
+
+    def isEmpty(self):
+        return len(self.heap) == 0
+
+    def update(self, item, priority):
+        # If item already in priority queue with higher priority, update its priority and rebuild the heap.
+        # If item already in priority queue with equal or lower priority, do nothing.
+        # If item not in priority queue, do the same thing as self.push.
+        for index, (p, c, i) in enumerate(self.heap):
+            if i == item:
+                if p <= priority:
+                    break
+                del self.heap[index]
+                self.heap.append((priority, c, item))
+                heapq.heapify(self.heap)
+                break
+        else:
+            self.push(item, priority)
+
+
+class Node:
+    def __init__(self, position, target, direction=1, parent=None):
+        self.pos = (int(position[0]), int(position[1]), position[2])
+        self.target = target
+        self.parent = parent
+        self.direction = direction
+        self.g = 0
+        self.seen = False
+        if parent is not None:
+            self.g = parent.g + 1
+        self.h = self.some_heurisitic()
+        self.f = self.g + self.h
+        self.children = []
+
+    def append(self, child):
+        self.children.append(child)
+
+    def __eq__(self, other):
+        if abs(self.pos[0] - other.pos[0]) < RESOLUTION // 4 and \
+                abs(self.pos[1] - other.pos[1]) < RESOLUTION // 4 and\
+                abs(self.pos[2] - other.pos[2]) < ANGLE_TOLERENCE / 2:
+            return True
+        else:
+            return False
+
+    def some_heurisitic(self):
+        if self.parent is None:
+            return custom_heuristic(self.pos, self.target)
+        penalty = abs(self.direction - self.parent.direction)
+        score = custom_heuristic(self.pos, self.target) + penalty * CHNG_DIR_PENALTY
+        return score
+
 
 # These functions will help you to check collisions with obstacles
 
@@ -24,20 +138,92 @@ def rotate(points, angle, center):
 
 def get_polygon_from_position(position) :
     x,y,yaw = position
-    points = [(x - 50, y - 100), (x + 50, y - 100), (x + 50, y + 100), (x - 50, y + 100)] 
+    # points = [(x - 50, y - 100), (x + 50, y - 100), (x + 50, y + 100), (x - 50, y + 100)]
+    points = [(x - 50, y - 100), (x + 50, y - 100), (x + 50, y + 100), (x - 50, y + 100), (x - 50, y - 100)]
     new_points = rotate(points, yaw * 180 / math.pi, (x,y))
-    return Polygon(*list(map(Point, new_points)))
+    # return Polygon(*list(map(Point, new_points)))
+    return Polygon(new_points)
 
 def get_polygon_from_obstacle(obstacle) :
-    points = [(obstacle[0], obstacle[1]), (obstacle[2], obstacle[3]), (obstacle[4], obstacle[5]), (obstacle[6], obstacle[7])] 
-    return Polygon(*list(map(Point, points)))
+    # points = [(obstacle[0], obstacle[1]), (obstacle[2], obstacle[3]), (obstacle[4], obstacle[5]), (obstacle[6], obstacle[7])]
+    points = [(obstacle[0], obstacle[1]), (obstacle[2], obstacle[3]), (obstacle[4], obstacle[5]),
+              (obstacle[6], obstacle[7]), (obstacle[0], obstacle[1])]
+    # return Polygon(*list(map(Point, points)))
+    return Polygon(points)
 
 def collides(position, obstacle) :
     return get_polygon_from_position(position).intersection(get_polygon_from_obstacle(obstacle))
         
 
 class Window():
-        
+
+    def a_star_path(self):
+        print('Path searching begins!')
+        node_queue = PriorityQueue()
+        trgt = self.get_target_position()
+        root = Node(self.get_start_position(), trgt)
+        node_queue.push(root, root.f)
+        node_seen = []
+        in_progress = True
+        while in_progress:
+            node = node_queue.pop()
+            if node not in node_seen:
+                node_seen.append(node)
+                print(f"Node position: [{node.pos[0]}, {node.pos[1]}, {node.pos[2]}]")
+                self.plot_node(node, color='cyan')
+                self.canvas.update_idletasks()
+                if self.is_target(node.pos):
+                    return node
+                self.move(node)
+                for ch_node in node.children:
+                    if ch_node not in node_seen:
+                        node_queue.push(ch_node, ch_node.f)
+
+    def move(self, node, n_chld=4):
+        node.seen = True
+        for stp in range(2 * n_chld + 1):
+            for direction in range(2):
+                x, y, yaw = node.pos
+                yaw += (stp - n_chld) * ANGLE_LIMIT / n_chld
+                x += (1 - 2 * direction) * math.cos(yaw) * RESOLUTION
+                y += (1 - 2 * direction) * math.sin(yaw) * RESOLUTION
+                pos = (x, y, yaw)
+                if not self.valid_move(pos):
+                    continue
+                child = Node(pos, node.target, parent=node, direction=direction)
+                if child not in node.children:
+                    node.append(child)
+
+    def valid_move(self, position):
+        for obstacle in self.get_obstacles():
+            if collides(position, obstacle):
+                return False
+        return True
+    
+    def is_target(self, pos):
+        target = self.get_target_position()
+        dx = abs(target[0] - pos[0])
+        dy = abs(target[1] - pos[1])
+        angle = abs(target[2] - pos[2])
+        if dx < RESOLUTION and dy < RESOLUTION and angle < ANGLE_TOLERENCE:
+            return True
+        return False
+
+    def plot_path(self, node):
+        while node.parent is not None:
+            x, y, _ = node.pos
+            xe, ye, _ = node.parent.pos
+            self.canvas.create_line(x, y, xe, ye, fill='yellow', width=3)
+            node = node.parent
+
+    def plot_node(self, node, color='yellow'):
+        create_circle(node.pos[0], node.pos[1], 2, self.canvas, color=color)
+        x = node.pos[0]
+        y = node.pos[1]
+        xe = x + math.cos(node.pos[2]) * RESOLUTION
+        ye = y + math.sin(node.pos[2]) * RESOLUTION
+        self.canvas.create_line(x, y, xe, ye, arrow=LAST)
+
     '''================= Your Main Function ================='''
     
     def go(self, event):
@@ -55,7 +241,10 @@ class Window():
             if collides(self.get_start_position(), obstacle) :
                 number_of_collisions += 1
         print("Start position collides with", number_of_collisions, "obstacles")
-        
+
+        path = self.a_star_path()
+        print("Optimal path is found!")
+        self.plot_path(path)
         
     '''================= Interface Methods ================='''
     
@@ -65,8 +254,9 @@ class Window():
         for i in potential_obstacles:
             if (i > 2) :
                 coords = self.canvas.coords(i)
-                if coords:
-                    obstacles.append(coords)
+                if coords and len(coords) > 4:
+                    if abs(coords[0] - coords[2]) > RESOLUTION:
+                        obstacles.append(coords)
         return obstacles
             
             
@@ -78,8 +268,7 @@ class Window():
     def get_target_position(self) :
         x,y = self.get_center(1) # Green block has id 1 
         yaw = self.get_yaw(1)
-        return x,y,yaw 
- 
+        return x,y,yaw
 
     def get_center(self, id_block):
         coords = self.canvas.coords(id_block)
@@ -103,9 +292,9 @@ class Window():
         cos_yaw = unit_x * first_x + unit_y * first_y 
         sign_yaw = unit_x * second_x + unit_y * second_y
         if (sign_yaw >= 0 ) :
-            return math.acos(cos_yaw)
-        else :
-            return -math.acos(cos_yaw)
+            return math.acos(cos_yaw) - math.pi / 2
+        else:
+            return -math.acos(cos_yaw) - math.pi / 2
        
     def get_vertices(self, id_block):
         return self.canvas.coords(id_block)
